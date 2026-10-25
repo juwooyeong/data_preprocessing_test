@@ -1,0 +1,289 @@
+# Impala Coordinator 연결 정보입니다. 비밀번호와 keytab은 이 파일에 저장하지 않습니다.
+impala:
+  host: impala-coordinator.example.com
+  port: 21050
+  auth_mechanism: GSSAPI
+  kerberos_service_name: impala
+  use_ssl: false
+  timeout: 60
+
+# Kerberos 인증 설정입니다.
+# 1. 서버에 이미 존재하는 keytab 파일의 절대 경로를 확인합니다.
+# 2. principal, keytab, krb5_config 값을 운영 환경에 맞게 수정합니다.
+# 3. 준비가 끝난 후 enabled: true로 변경합니다.
+# enabled: false이면 Python이 kinit을 수행하지 않고 현재 프로세스 환경을 그대로
+# 사용합니다. 운영 Kerberos 자동 인증을 사용하려면 반드시 true로 설정합니다.
+kerberos:
+  enabled: false
+
+  # true: Python이 고유 credential cache를 만들고 keytab으로 kinit 수행
+  # false: 이미 발급된 외부 ticket을 klist로 확인한 뒤 사용
+  manage_ticket: true
+
+  # 환경변수 BATCH_KRB_PRINCIPAL이 있으면 아래 값보다 우선합니다.
+  principal: ai_lake_batch@EXAMPLE.COM
+
+  # 서버에 이미 존재하는 keytab 파일의 절대 경로를 지정합니다.
+  # Python은 이 파일을 복사하거나 변경하지 않고 읽기만 합니다.
+  # 환경변수 BATCH_KEYTAB이 있으면 아래 값보다 우선합니다.
+  keytab: /etc/security/keytabs/ai_lake_batch.keytab
+
+  # Linux 운영 서버의 실제 Kerberos 설정 파일입니다.
+  # KRB5_CONFIG 환경변수가 있으면 아래 값보다 우선합니다.
+  krb5_config: /etc/krb5.conf
+
+  # 프로세스마다 고유한 ticket cache 파일을 만드는 보안 디렉터리입니다.
+  cache_dir: run/krb5_cache
+
+# 프로그램이 자동 생성하고 갱신하는 Kudu 이력 테이블입니다.
+history:
+  table: ai_datawarehouse.preprocessing_history
+  change_table: ai_datawarehouse.preprocessing_change_history
+
+runtime:
+  log_dir: logs
+  lock_file: run/preprocessing.lock
+
+# -----------------------------------------------------------------------------
+# 도메인 규칙 실행 기능 스위치
+#
+# [현재처럼 주석을 유지하는 경우]
+#   - domain_rules 규칙은 실제 전처리 SQL에 적용되지 않습니다.
+#   - 결측값 보완 및 도메인 오류 행 제외가 실행되지 않습니다.
+#   - ai_lake 원본과 ai_datawarehouse 적재 결과에 도메인 규칙이 영향을 주지
+#     않습니다.
+#
+# [아래 domain_rules_enabled: true의 주석을 푸는 경우]
+#   - 아래 각 테이블의 domain_rules.enabled가 true인 규칙만 적용됩니다.
+#   - action: fill 규칙은 조건에 맞는 결측값을 지정한 value로 보완합니다.
+#   - action: exclude 규칙은 조건에 맞는 행을 DW 적재 대상에서 제외합니다.
+#   - 현재 샘플은 고객 유형/국가 코드 결측 보완, 잘못된 고객 상태/음수 점수/
+#     미래 생성일시 제외 규칙입니다.
+#
+# 중요:
+#   샘플 컬럼명과 값은 실제 운영 스키마가 아닐 수 있습니다. 운영 컬럼과 업무
+#   기준으로 수정한 후 --validate-only, --dry-run 검증을 완료해야 합니다.
+#   검증 전에는 아래 주석을 풀지 마십시오.
+# -----------------------------------------------------------------------------
+features:
+  # domain_rules_enabled: true
+
+tables:
+  - name: customer
+    enabled: false
+    source: ai_lake.customer
+    target: ai_datawarehouse.customer
+
+    # 일반 테이블은 full로 처리합니다. full은 대상 테이블 전체를 삭제한 뒤
+    # 원천 전체를 전처리하여 다시 적재합니다. load를 생략해도 full입니다.
+    load:
+      mode: full
+
+    # 빅테이블을 날짜 단위로 나누려면 위 load 블록 대신 아래 예시를 사용합니다.
+    # start_date는 포함하고 end_date는 포함하지 않습니다. 아래 설정이면
+    # 2026-01-01 00:00:00 이상 ~ 2026-02-01 00:00:00 미만을 하루씩 처리합니다.
+    # date_column은 원천과 대상에 모두 존재해야 합니다.
+    #
+    # load:
+    #   mode: date_range
+    #   date_column: created_at
+    #   start_date: "2026-01-01"
+    #   end_date: "2026-02-01"
+    #   interval_days: 1
+    #   # STRING 날짜 컬럼에 저장된 실제 형식을 적습니다. DATE/TIMESTAMP
+    #   # 타입은 아래 값을 사용하지 않고 타입에 맞는 표준 형식을 사용합니다.
+    #   source_format: yyyy-MM-dd HH:mm:ss
+    #   target_format: yyyy-MM-dd HH:mm:ss
+    #
+    # 지원 문자열 형식:
+    #   yyyy-MM-dd, yyyy-MM-dd HH:mm:ss, yyyyMMdd, yyyyMMddHHmmss
+    # 문자열 날짜 값은 컬럼 전체에서 한 형식으로 저장되어 있어야 합니다.
+
+    # 이 trim 블록은 현재 tables 항목의 source/target, 즉
+    # ai_lake.customer -> ai_datawarehouse.customer 처리에만 적용됩니다.
+    # 다른 테이블에 TRIM 규칙을 적용하려면 해당 tables 항목 안에 별도의
+    # trim 블록을 작성합니다. trim 블록에 테이블명을 다시 적을 필요는 없습니다.
+    #
+    # 문자열 공백/개행 전처리 설정입니다.
+    # columns를 작성하면 목록에 지정한 활성 컬럼만 처리합니다.
+    # columns를 생략하면 기존 방식처럼 payload 등 제외 컬럼을 뺀 모든 문자열
+    # 컬럼에 양끝 TRIM만 적용합니다.
+    trim:
+      enabled: true
+      exclude_columns:
+        - payload
+      columns:
+        # customer_id: CR/LF를 공백으로 바꾼 뒤 연속 공백을 한 칸으로 줄이고
+        # 문자열 양끝 공백을 제거합니다.
+        - column: customer_id
+          enabled: true
+          trim: true
+          collapse_spaces: true
+          collapse_newlines: false
+          newline_to_space: true
+
+        # updated_at: CRLF/CR/LF를 LF로 통일하고 연속 개행을 한 번으로 줄입니다.
+        # 개행을 보존하므로 newline_to_space는 false여야 합니다.
+        - column: updated_at
+          enabled: true
+          trim: true
+          collapse_spaces: false
+          collapse_newlines: true
+          newline_to_space: false
+
+      # 옵션 설명
+      # - enabled: false이면 해당 컬럼의 공백/개행 전처리를 적용하지 않음
+      # - trim: 문자열 앞뒤 공백 제거
+      # - collapse_spaces: 연속된 일반 공백을 한 칸으로 변환
+      # - collapse_newlines: 연속 CR/LF 개행을 하나의 LF로 변환
+      # - newline_to_space: CR 또는 LF를 일반 공백으로 변환
+      # collapse_newlines와 newline_to_space는 동시에 true로 설정할 수 없습니다.
+
+    # 여기 지정한 날짜 컬럼만 변환합니다.
+    # - 원천 STRING -> 대상 STRING: input_formats로 파싱 후 output_format 적용
+    # - 원천 TIMESTAMP -> 대상 STRING: 파싱 없이 output_format 적용
+    # TIMESTAMP 값을 2026-01-01T10:00:00 형태로 저장하려면 대상 Kudu
+    # 컬럼을 STRING으로 만들고 output_format에 아래처럼 'T'를 지정합니다.
+    datetime:
+      - column: created_at
+        input_formats:
+          - yyyyMMddHHmmss
+          - yyyy-MM-dd HH:mm:ss
+          - yyyy/MM/dd HH:mm:ss
+        output_format: yyyy-MM-dd HH:mm:ss
+        invalid_action: null
+
+      # 원천 created_timestamp가 TIMESTAMP인 경우의 예시입니다.
+      # TIMESTAMP 원천에는 input_formats를 작성하지 않습니다.
+      # 실제 적용할 때 주석을 풀고 대상의 같은 컬럼을 STRING으로 만듭니다.
+      # - column: created_timestamp
+      #   output_format: yyyy-MM-dd'T'HH:mm:ss
+      #   invalid_action: fail
+
+    # 테스트 데이터나 명백한 오기입 값을 제외하려면 아래 설정을 활성화합니다.
+    # 여러 규칙 중 하나라도 일치하면 해당 행 전체가 DW 적재에서 제외됩니다.
+    # name은 영문/숫자/밑줄만 사용하고 테이블 안에서 중복되지 않아야 합니다.
+    noise_filters:
+      enabled: false
+      rules:
+        # customer_name에 'test' 또는 '테스트'가 포함된 샘플 데이터 판별 예시
+        - name: test_customer_english
+          column: customer_name
+          operator: contains
+          value: test
+          case_sensitive: false
+          action: exclude
+        - name: test_customer_korean
+          column: customer_name
+          operator: contains
+          value: 테스트
+          case_sensitive: false
+          action: exclude
+        # 업무상 허용하지 않는 오기입 코드 목록 판별 예시
+        - name: invalid_status_code
+          column: status_code
+          operator: in
+          values:
+            - XXX
+            - UNKNOWN
+          case_sensitive: false
+          action: exclude
+
+    # 위 컬럼명과 값은 예시입니다. 실제 원천 컬럼 및 업무 규칙을 확인한 뒤
+    # 수정하고 enabled: true로 변경해야 합니다. false 상태에서는 적용되지 않습니다.
+
+    # 도메인 규칙 기반 보완/제외 샘플입니다.
+    # - 위 features.domain_rules_enabled가 주석 상태이면 아래 규칙은 적용 안 됨
+    # - 위 features.domain_rules_enabled의 주석을 풀면 아래 규칙이 적용됨
+    # - 이 테이블의 enabled가 false이면 전역 스위치를 풀어도 테이블 자체가
+    #   실행 대상이 아니므로 적용되지 않음
+    # 실제 컬럼과 업무 기준을 확인한 뒤 전역 스위치 주석을 풉니다.
+    domain_rules:
+      enabled: true
+      rules:
+        # 1. 고객 유형이 비어 있으면 '미분류'로 보완
+        - name: fill_customer_type
+          column: customer_type
+          operator: is_blank
+          action: fill
+          value: 미분류
+
+        # 2. 국가 코드가 비어 있으면 국내 코드 'KR'로 보완
+        - name: fill_country_code
+          column: country_code
+          operator: is_blank
+          action: fill
+          value: KR
+
+        # 3. 허용되지 않은 고객 상태 코드는 제외
+        - name: exclude_invalid_customer_status
+          column: customer_status
+          operator: not_in
+          values:
+            - ACTIVE
+            - INACTIVE
+            - PENDING
+          action: exclude
+
+        # 4. 고객 점수가 음수인 명백한 오기입 행은 제외
+        - name: exclude_negative_customer_score
+          column: customer_score
+          operator: less_than
+          value: 0
+          action: exclude
+
+        # 5. 현재 시각보다 미래인 생성일시는 제외
+        - name: exclude_future_created_at
+          column: created_at
+          operator: greater_than_current_datetime
+          action: exclude
+
+    # 설정하지 않거나 enabled=false이면 중복 제거하지 않습니다.
+    # keys에는 Kudu PK가 아니라 업무적으로 같은 데이터라고 판단할 컬럼을
+    # 명시하는 것을 권장합니다. 예: 사고번호 + 사고발생일시 + 사고장소코드.
+    # keys의 모든 값이 같은 행들을 하나의 중복 그룹으로 판단합니다.
+    # order_by는 각 중복 그룹에서 실제로 남길 한 행의 우선순위입니다.
+    deduplicate:
+      enabled: true
+      # PK fallback은 기본적으로 허용하지 않습니다. keys 없이 대상 Kudu PK를
+      # 의도적으로 사용해야 할 때만 true로 변경합니다.
+      allow_target_primary_key_fallback: false
+      keys:
+        - customer_id
+        # 실제 업무 기준에 따라 아래처럼 복합 키를 추가할 수 있습니다.
+        # - accident_datetime
+        # - accident_location_code
+      order_by:
+        - column: updated_at
+          direction: desc
+        - column: customer_id
+          direction: asc
+
+    validation:
+      allow_empty: false
+      max_reduction_percent: 20
+
+# 테이블별 TRIM 설정 구조 예시
+# 아래처럼 테이블을 추가하면 order 테이블은 customer 테이블과 독립된 공백
+# 전처리 옵션을 사용합니다. 실제 사용 시 주석을 풀고 컬럼명을 수정합니다.
+#
+#  - name: order
+#    enabled: false
+#    source: ai_lake.order
+#    target: ai_datawarehouse.order
+#    load:
+#      mode: full
+#    trim:
+#      enabled: true
+#      columns:
+#        - column: order_name
+#          enabled: true
+#          trim: true
+#          collapse_spaces: true
+#          collapse_newlines: false
+#          newline_to_space: true
+#    deduplicate:
+#      enabled: false
+#    validation:
+#      allow_empty: false
+#      max_reduction_percent: 20
