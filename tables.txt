@@ -1,0 +1,29 @@
+tables:
+  - name: big_table
+    enabled: true
+    source: ai_lake.big_table
+    target: ai_datawarehouse.big_table
+
+    load:
+      mode: date_range
+      date_column: created_at
+
+      # 2026-01-01 이상, 2026-02-01 미만
+      start_date: "2026-01-01"
+      end_date: "2026-02-01"
+
+      # 하루씩 처리
+      interval_days: 1
+
+      # ai_lake 실제 저장 형식
+      source_format: yyyyMMddHHmmss
+
+      # ai_datawarehouse 실제 저장 형식
+      target_format: "yyyy-MM-dd'T'HH:mm:ss"
+
+    datetime:
+      - column: created_at
+        input_formats:
+          - yyyyMMddHHmmss
+        output_format: "yyyy-MM-dd'T'HH:mm:ss"
+        invalid_action: fail
